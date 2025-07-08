@@ -1,66 +1,32 @@
-from fastapi import FastAPI, Request, HTTPException
-from fastapi.middleware.cors import CORSMiddleware
-import httpx
-import os
+from fastapi import FastAPI, Request
+import requests
 
 app = FastAPI()
 
-# Enable CORS
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
-
-STATUSPAGE_API_KEY = os.getenv("STATUSPAGE_API_KEY")
-PAGE_ID = "gssrvqwbzz91"
-COMPONENT_MAP = {
-    "jira": "vhrm0ww1rkwn",
-    "agile": "6rvkdr8qyyr2",
-    "confluence": "l9k0d6hn6t4l",
-    "xray": "qr00w735vx7c"
+STATUSPAGE_API = "https://api.statuspage.io/v1/pages/gssrvqwbzz91/components"
+API_KEY = "025a4fc78b9948daa4e2136df37f1257"
+COMPONENT_IDS = {
+    "vhrm0ww1rkwn": "Jira",
+    "6rvkdr8qyyr2": "Agile Hive",
+    "l9k0d6hn6t4l": "Confluence",
+    "qr00w735vx7c": "Xray"
 }
 
 @app.post("/dynatrace-webhook")
-async def receive_dynatrace_webhook(request: Request):
-    payload = await request.json()
-    problem = payload.get("problem", {})
+async def dynatrace_webhook(request: Request):
+    data = await request.json()
+    component_id = data.get("component")
+    status = data.get("status")
 
-    title = problem.get("title", "")
-    status = "partial_outage"  # default
-    component_id = None
+    if component_id not in COMPONENT_IDS:
+        return {"error": "Invalid component ID"}
 
-    # Determine component & status
-    if "jira" in title.lower():
-        component_id = COMPONENT_MAP["jira"]
-    elif "confluence" in title.lower():
-        component_id = COMPONENT_MAP["confluence"]
-    elif "agile" in title.lower():
-        component_id = COMPONENT_MAP["agile"]
-    elif "xray" in title.lower():
-        component_id = COMPONENT_MAP["xray"]
+    url = f"{STATUSPAGE_API}/{component_id}.json"
+    headers = {
+        "Authorization": f"OAuth {API_KEY}",
+        "Content-Type": "application/json"
+    }
+    payload = { "component": { "status": status } }
 
-    if "closed" in title.lower():
-        status = "operational"
-    elif "duration" in title.lower() or "timeout" in title.lower():
-        status = "degraded_performance"
-
-    if not component_id:
-        raise HTTPException(status_code=400, detail="Component not matched in title.")
-
-    # Update component status on Statuspage
-    async with httpx.AsyncClient() as client:
-        response = await client.patch(
-            f"https://api.statuspage.io/v1/pages/{PAGE_ID}/components/{component_id}",
-            headers={
-                "Authorization": f"OAUTH {STATUSPAGE_API_KEY}",
-                "Content-Type": "application/json"
-            },
-            json={"component": {"status": status}}
-        )
-        if response.status_code != 200:
-            raise HTTPException(status_code=response.status_code, detail=response.text)
-
-    return {"message": "Component status updated."}
+    res = requests.patch(url, headers=headers, json=payload)
+    return {"status": res.status_code, "response": res.text}
