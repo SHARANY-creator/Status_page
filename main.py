@@ -1,32 +1,63 @@
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, Request, HTTPException
 import requests
+import os
 
 app = FastAPI()
 
-STATUSPAGE_API = "https://api.statuspage.io/v1/pages/gssrvqwbzz91/components"
-API_KEY = "025a4fc78b9948daa4e2136df37f1257"
+# Your Statuspage page ID and API key (use environment variables in Render)
+STATUSPAGE_API_KEY = os.getenv("STATUSPAGE_API_KEY", "<your_api_key>")
+STATUSPAGE_PAGE_ID = os.getenv("STATUSPAGE_PAGE_ID", "gssrvqwbzz91")
+
+# Component mappings
 COMPONENT_IDS = {
-    "vhrm0ww1rkwn": "Jira",
-    "6rvkdr8qyyr2": "Agile Hive",
-    "l9k0d6hn6t4l": "Confluence",
-    "qr00w735vx7c": "Xray"
+    "jira": "vhrm0ww1rkwn",
+    "agile": "6rvkdr8qyyr2",
+    "conflu": "l9k0d6hn6t4l",
+    "xray": "qr00w735vx7c"
 }
 
+# Dynatrace/Zapier → FastAPI → Statuspage
 @app.post("/dynatrace-webhook")
-async def dynatrace_webhook(request: Request):
-    data = await request.json()
-    component_id = data.get("component")
-    status = data.get("status")
+async def handle_dynatrace_webhook(request: Request):
+    try:
+        data = await request.json()
+        title = data.get("problem_title", "").lower()
+        body = data.get("body", "").lower()
 
-    if component_id not in COMPONENT_IDS:
-        return {"error": "Invalid component ID"}
+        component_id = ""
+        status = ""
 
-    url = f"{STATUSPAGE_API}/{component_id}.json"
-    headers = {
-        "Authorization": f"OAuth {API_KEY}",
-        "Content-Type": "application/json"
-    }
-    payload = { "component": { "status": status } }
+        # Determine component
+        for keyword, comp_id in COMPONENT_IDS.items():
+            if keyword in title or keyword in body:
+                component_id = comp_id
+                break
 
-    res = requests.patch(url, headers=headers, json=payload)
-    return {"status": res.status_code, "response": res.text}
+        if not component_id:
+            return {"error": "Component not matched in title or body."}
+
+        # Determine status
+        if "closed" in title:
+            status = "operational"
+        elif "duration" in title or "timeout" in title or "value was above" in body:
+            status = "degraded_performance"
+        else:
+            status = "partial_outage"
+
+        # Update Statuspage
+        url = f"https://api.statuspage.io/v1/pages/{STATUSPAGE_PAGE_ID}/components/{component_id}.json"
+        headers = {
+            "Authorization": f"OAuth {STATUSPAGE_API_KEY}",
+            "Content-Type": "application/json"
+        }
+        payload = {"component": {"status": status}}
+
+        response = requests.patch(url, headers=headers, json=payload)
+
+        if response.status_code == 200:
+            return {"message": f"Component updated to '{status}'", "component_id": component_id}
+        else:
+            raise HTTPException(status_code=response.status_code, detail=response.text)
+
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
